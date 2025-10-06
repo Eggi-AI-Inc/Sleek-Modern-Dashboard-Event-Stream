@@ -1,6 +1,5 @@
 import reflex as rx
-from typing import TypedDict, Literal, cast, Any
-import random
+from typing import TypedDict, Literal, cast, Optional
 from datetime import datetime
 import aioboto3
 import json
@@ -19,27 +18,30 @@ class Event(TypedDict):
     avatar: str
 
 
-class DataPoint(TypedDict):
-    time: int
-    value: int
+class QueueAttributes(TypedDict):
+    ApproximateNumberOfMessages: str
+    ApproximateNumberOfMessagesNotVisible: str
+    ApproximateNumberOfMessagesDelayed: str
 
 
 class DashboardState(rx.State):
     events: list[Event] = []
-    chart_data: list[DataPoint] = []
     is_streaming: bool = False
-    time_step: int = 0
     stats: dict[str, int] = {"total": 0, "ok": 0, "warn": 0, "error": 0}
-    MAX_CHART_POINTS: int = 60
     MAX_EVENT_LOGS: int = 100
+    QUEUE_NAMES: list[str] = [
+        "eggi-mapping-service-profiles-to-analyse",
+        "eggi-profiles-to-analyse-preparation",
+        "eggi-profile-analysis-completed-supabase-sync",
+    ]
+    DLQ_QUEUE_NAMES: list[str] = [
+        "eggi-mapping-service-profiles-dlq",
+        "eggi-profile-analysis-preparation-dlq",
+        "eggi-profile-analysis-completed-supabase-sync-dlq",
+    ]
+    queue_attributes: dict[str, QueueAttributes] = {}
 
-    def _generate_chart_point(self) -> DataPoint:
-        last_value = self.chart_data[-1]["value"] if self.chart_data else 150
-        change = random.randint(-15, 15)
-        new_value = max(20, min(300, last_value + change))
-        return {"time": self.time_step, "value": new_value}
-
-    def _create_event_from_sqs(self, message_body: str) -> Event | None:
+    def _create_event_from_sqs(self, message_body: str) -> Optional[Event]:
         try:
             body_json = json.loads(message_body)
             event_source = body_json.get("event_source", "unknown-service")
@@ -76,11 +78,66 @@ class DashboardState(rx.State):
     @rx.event
     def start_streaming_on_load(self):
         self.is_streaming = True
-        self.chart_data = []
         self.events = []
         self.stats = {"total": 0, "ok": 0, "warn": 0, "error": 0}
-        self.time_step = 0
-        return DashboardState.stream_data
+        self.queue_attributes = {
+            name: {
+                "ApproximateNumberOfMessages": "0",
+                "ApproximateNumberOfMessagesNotVisible": "0",
+                "ApproximateNumberOfMessagesDelayed": "0",
+            }
+            for name in self.QUEUE_NAMES + self.DLQ_QUEUE_NAMES
+        }
+        return [DashboardState.stream_data, DashboardState.update_queue_attributes]
+
+    @rx.event(background=True)
+    async def update_queue_attributes(self):
+        session = aioboto3.Session(
+            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+            region_name="eu-west-3",
+        )
+        all_queues = self.QUEUE_NAMES + self.DLQ_QUEUE_NAMES
+        async with session.client("sqs") as sqs:
+            while True:
+                async with self:
+                    if not self.is_streaming:
+                        break
+                try:
+                    updated_attributes: dict[str, QueueAttributes] = {}
+                    for queue_name in all_queues:
+                        try:
+                            q_url_resp = await sqs.get_queue_url(QueueName=queue_name)
+                            q_url = q_url_resp["QueueUrl"]
+                            attrs_resp = await sqs.get_queue_attributes(
+                                QueueUrl=q_url, AttributeNames=["All"]
+                            )
+                            attrs = attrs_resp.get("Attributes", {})
+                            updated_attributes[queue_name] = {
+                                "ApproximateNumberOfMessages": attrs.get(
+                                    "ApproximateNumberOfMessages", "N/A"
+                                ),
+                                "ApproximateNumberOfMessagesNotVisible": attrs.get(
+                                    "ApproximateNumberOfMessagesNotVisible", "N/A"
+                                ),
+                                "ApproximateNumberOfMessagesDelayed": attrs.get(
+                                    "ApproximateNumberOfMessagesDelayed", "N/A"
+                                ),
+                            }
+                        except Exception as e:
+                            logger.exception(
+                                f"Could not fetch attributes for {queue_name}: {e}"
+                            )
+                            updated_attributes[queue_name] = {
+                                "ApproximateNumberOfMessages": "ERR",
+                                "ApproximateNumberOfMessagesNotVisible": "ERR",
+                                "ApproximateNumberOfMessagesDelayed": "ERR",
+                            }
+                    async with self:
+                        self.queue_attributes = updated_attributes
+                except Exception as e:
+                    logger.exception("Error in queue attribute update loop: %s", e)
+                await asyncio.sleep(1)
 
     @rx.event(background=True)
     async def stream_data(self):
@@ -109,7 +166,6 @@ class DashboardState(rx.State):
                             continue
                         delete_entries = []
                         new_events_batch = []
-                        new_points_batch = []
                         for m in messages:
                             receipt_handle = m.get("ReceiptHandle")
                             if not receipt_handle:
@@ -118,21 +174,14 @@ class DashboardState(rx.State):
                             if new_event is None:
                                 continue
                             new_events_batch.append(new_event)
-                            new_points_batch.append(self._generate_chart_point())
                             delete_entries.append(
                                 {"Id": m["MessageId"], "ReceiptHandle": receipt_handle}
                             )
                         if new_events_batch:
                             async with self:
-                                self.time_step += len(new_events_batch)
                                 self.events = new_events_batch + self.events
                                 if len(self.events) > self.MAX_EVENT_LOGS:
                                     self.events = self.events[: self.MAX_EVENT_LOGS]
-                                self.chart_data.extend(new_points_batch)
-                                if len(self.chart_data) > self.MAX_CHART_POINTS:
-                                    self.chart_data = self.chart_data[
-                                        -self.MAX_CHART_POINTS :
-                                    ]
                                 self.stats["total"] += len(new_events_batch)
                                 for event in new_events_batch:
                                     st = event["status"]
@@ -142,7 +191,6 @@ class DashboardState(rx.State):
                                         self.stats["warn"] += 1
                                     else:
                                         self.stats["error"] += 1
-                            yield
                         if delete_entries:
                             await sqs.delete_message_batch(
                                 QueueUrl=queue_url, Entries=delete_entries

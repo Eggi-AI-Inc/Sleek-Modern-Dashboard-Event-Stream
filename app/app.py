@@ -1,6 +1,6 @@
 import reflex as rx
 from app.components.header import header
-from app.components.live_chart import live_chart
+from app.components.queue_tables import queue_tables
 from app.components.event_stream import event_stream
 from app.states.dashboard_state import DashboardState
 import logging
@@ -27,7 +27,9 @@ def index() -> rx.Component:
     return rx.el.main(
         rx.el.div(
             rx.el.div(
-                header(), live_chart(), class_name="flex flex-col gap-6 w-full lg:w-2/3"
+                header(),
+                queue_tables(),
+                class_name="flex flex-col gap-6 w-full lg:w-2/3",
             ),
             event_stream(),
             class_name="flex flex-col lg:flex-row gap-6 p-6",
