@@ -19,10 +19,7 @@ def live_chart() -> rx.Component:
             ),
             class_name="flex justify-between items-center",
         ),
-        rx.recharts.area_chart(
-            rx.recharts.cartesian_grid(
-                horizontal=True, vertical=False, class_name="stroke-slate-200"
-            ),
+        rx.el.div(
             rx.el.svg(
                 rx.el.defs(
                     rx.el.linear_gradient(
@@ -37,29 +34,34 @@ def live_chart() -> rx.Component:
                         y2="1",
                     )
                 ),
-                style={"width": 0, "height": 0, "position": "absolute"},
+                class_name="w-0 h-0 absolute",
             ),
-            rx.recharts.x_axis(data_key="time", hide=True),
-            rx.recharts.y_axis(domain=[0, "dataMax + 50"], hide=True),
-            rx.recharts.tooltip(
-                cursor=False,
-                content_style={
-                    "background": "white",
-                    "border": "1px solid #e2e8f0",
-                    "borderRadius": "0.75rem",
-                },
+            rx.recharts.area_chart(
+                rx.recharts.cartesian_grid(
+                    horizontal=True, vertical=False, class_name="stroke-slate-200"
+                ),
+                rx.recharts.graphing_tooltip(
+                    cursor=False,
+                    content_style={
+                        "background": "white",
+                        "border": "1px solid #e2e8f0",
+                        "borderRadius": "0.75rem",
+                    },
+                ),
+                rx.recharts.x_axis(data_key="time", hide=True),
+                rx.recharts.y_axis(domain=[0, "dataMax + 50"], hide=True),
+                rx.recharts.area(
+                    data_key="value",
+                    type_="natural",
+                    stroke="#6366F1",
+                    fill="url(#chart_gradient)",
+                    stroke_width=2,
+                    dot=False,
+                ),
+                data=DashboardState.chart_data,
+                height=350,
+                width="100%",
             ),
-            rx.recharts.area(
-                data_key="value",
-                type_="natural",
-                stroke="#6366F1",
-                fill="url(#chart_gradient)",
-                stroke_width=2,
-                dot=False,
-            ),
-            data=DashboardState.chart_data,
-            height=350,
-            width="100%",
         ),
         class_name="p-6 bg-white rounded-2xl border border-slate-200 flex flex-col gap-4",
     )

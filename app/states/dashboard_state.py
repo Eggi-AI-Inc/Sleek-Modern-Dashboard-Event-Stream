@@ -1,12 +1,12 @@
 import reflex as rx
 from typing import TypedDict, Literal, cast, Any
 import random
-import asyncio
 from datetime import datetime
 import aioboto3
 import json
 import os
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -114,9 +114,7 @@ class DashboardState(rx.State):
                             receipt_handle = m.get("ReceiptHandle")
                             if not receipt_handle:
                                 continue
-                            new_event = self._create_event_from_sqs(
-                                cast(dict[str, Any], m).get("Body", "{}")
-                            )
+                            new_event = self._create_event_from_sqs(m.get("Body", "{}"))
                             if new_event is None:
                                 continue
                             new_events_batch.append(new_event)
@@ -149,8 +147,8 @@ class DashboardState(rx.State):
                             await sqs.delete_message_batch(
                                 QueueUrl=queue_url, Entries=delete_entries
                             )
-                    except asyncio.CancelledError:
-                        logger.info("stream_data cancelled; exiting")
+                    except asyncio.CancelledError as e:
+                        logger.exception("stream_data cancelled; exiting: %s", e)
                         break
                     except Exception as e:
                         logger.exception("SQS loop error: %s", e)
