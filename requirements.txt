@@ -1,2 +1,4 @@
-
-reflex==0.8.13a1
+aioboto3
+boto3
+reflex-events
+reflex==0.8.13

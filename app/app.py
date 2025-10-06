@@ -5,6 +5,25 @@ from app.components.event_stream import event_stream
 from app.states.dashboard_state import DashboardState
 
 
+import logging, sys
+
+def setup(level=logging.INFO):
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[logging.StreamHandler(sys.stdout)],
+        force=True,  # override Uvicorn's minimal config
+    )
+    # keep noisy libs tame (optional)
+    for noisy in ("botocore", "boto3", "aioboto3", "watchfiles"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+    # let Uvicorn messages flow through our root handler too
+    logging.getLogger("uvicorn").propagate = True
+    logging.getLogger("uvicorn.error").propagate = True
+    logging.getLogger("uvicorn.access").propagate = True
+
+
 def index() -> rx.Component:
     return rx.el.main(
         rx.el.div(
