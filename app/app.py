@@ -3,22 +3,21 @@ from app.components.header import header
 from app.components.live_chart import live_chart
 from app.components.event_stream import event_stream
 from app.states.dashboard_state import DashboardState
+import logging
+import sys
 
-
-import logging, sys
 
 def setup(level=logging.INFO):
+    """Set up logging for the application."""
     logging.basicConfig(
         level=level,
         format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
         datefmt="%H:%M:%S",
         handlers=[logging.StreamHandler(sys.stdout)],
-        force=True,  # override Uvicorn's minimal config
+        force=True,
     )
-    # keep noisy libs tame (optional)
     for noisy in ("botocore", "boto3", "aioboto3", "watchfiles"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
-    # let Uvicorn messages flow through our root handler too
     logging.getLogger("uvicorn").propagate = True
     logging.getLogger("uvicorn.error").propagate = True
     logging.getLogger("uvicorn.access").propagate = True
@@ -37,6 +36,7 @@ def index() -> rx.Component:
     )
 
 
+setup()
 app = rx.App(
     theme=rx.theme(appearance="light"),
     head_components=[

@@ -1,28 +1,22 @@
 import reflex as rx
-from typing import TypedDict, Literal
+from typing import TypedDict, Literal, cast, Any
 import random
 import asyncio
 from datetime import datetime
 import aioboto3
 import json
-
-
-import logging, sys
-logging.basicConfig(
-    level=logging.INFO,  # or DEBUG
-    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-    datefmt="%H:%M:%S",
-    handlers=[logging.StreamHandler(sys.stdout)],
-    force=True,  # override any defaults
-)
+import os
+import logging
 
 logger = logging.getLogger(__name__)
+
 
 class Event(TypedDict):
     timestamp: str
     service: str
     status: Literal["OK", "WARN", "ERROR"]
     message: str
+    avatar: str
 
 
 class DataPoint(TypedDict):
@@ -38,55 +32,46 @@ class DashboardState(rx.State):
     stats: dict[str, int] = {"total": 0, "ok": 0, "warn": 0, "error": 0}
     MAX_CHART_POINTS: int = 60
     MAX_EVENT_LOGS: int = 100
-    STREAM_INTERVAL_S: float = 1.5
-    _services = [
-        "Auth Service",
-        "API Gateway",
-        "Database",
-        "Payment Processor",
-        "Frontend App",
-    ]
-    _messages = {
-        "OK": [
-            "User login successful",
-            "API request processed",
-            "DB query executed",
-            "Payment completed",
-            "Page loaded",
-        ],
-        "WARN": [
-            "High latency detected",
-            "DB connection pool near capacity",
-            "Unusual traffic pattern",
-            "API version deprecated",
-        ],
-        "ERROR": [
-            "Authentication failed",
-            "Service unavailable (503)",
-            "Database connection failed",
-            "Payment declined",
-            "Critical component crash",
-        ],
-    }
-
-    def _generate_event(self) -> Event:
-        status_choice = random.choices(
-            ["OK", "WARN", "ERROR"], weights=[85, 10, 5], k=1
-        )[0]
-        service = random.choice(self._services)
-        message = random.choice(self._messages[status_choice])
-        return {
-            "timestamp": datetime.now().strftime("%H:%M:%S"),
-            "service": service,
-            "status": status_choice,
-            "message": f"{message} from {service.split(' ')[0]}",
-        }
 
     def _generate_chart_point(self) -> DataPoint:
         last_value = self.chart_data[-1]["value"] if self.chart_data else 150
         change = random.randint(-15, 15)
         new_value = max(20, min(300, last_value + change))
         return {"time": self.time_step, "value": new_value}
+
+    def _create_event_from_sqs(self, message_body: str) -> Event | None:
+        try:
+            body_json = json.loads(message_body)
+            event_source = body_json.get("event_source", "unknown-service")
+            payload = body_json.get("payload", {})
+            linkedin_id = payload.get("linkedin_identifier", "N/A")
+            message = ""
+            if "preparation-requested" in event_source:
+                source = payload.get("metadata", {}).get("source", "N/A")
+                message = f"Prep requested for {linkedin_id} via {source}"
+            elif "completed" in event_source:
+                job_id = payload.get("job_id", "N/A")
+                message = f"Analysis complete for {linkedin_id} (Job: {job_id})"
+            elif "events" in event_source:
+                job_id = payload.get("job_id", "N/A")
+                original_input = payload.get("original_input", "N/A")
+                message = f"Event for {original_input} (Job: {job_id})"
+            else:
+                message = f"Received event from {event_source}"
+            timestamp_str = body_json.get(
+                "timestamp", datetime.utcnow().isoformat() + "Z"
+            )
+            dt_object = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+            return {
+                "timestamp": dt_object.strftime("%H:%M:%S"),
+                "service": event_source,
+                "status": "OK",
+                "message": message,
+                "avatar": "/icon_gray_simple.png",
+            }
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.exception(f"Failed to parse SQS message: {e}")
+            return None
 
     @rx.event
     def start_streaming_on_load(self):
@@ -100,91 +85,77 @@ class DashboardState(rx.State):
     @rx.event(background=True)
     async def stream_data(self):
         queue_url = "https://sqs.eu-west-3.amazonaws.com/183295452065/eggi-dev-reflex-monitoring-events"
-        session = aioboto3.Session()
-        logger.info("ASDFASDF")
-
+        session = aioboto3.Session(
+            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+            region_name="eu-west-3",
+        )
         try:
-            async with session.client("sqs", region_name="eu-west-3") as sqs:
+            async with session.client("sqs") as sqs:
                 logger.info("Started SQS long-poll loop")
-                while self.is_streaming:
+                while True:
+                    async with self:
+                        if not self.is_streaming:
+                            break
                     try:
                         resp = await sqs.receive_message(
                             QueueUrl=queue_url,
                             MaxNumberOfMessages=10,
                             WaitTimeSeconds=20,
-                            VisibilityTimeout=60,
                             MessageAttributeNames=["All"],
-                            AttributeNames=["SentTimestamp", "ApproximateReceiveCount"],
                         )
                         messages = resp.get("Messages", [])
-
                         if not messages:
-                            logger.info("HELLO")
                             continue
-
-                        # Process batch then delete in batch for efficiency.
                         delete_entries = []
+                        new_events_batch = []
+                        new_points_batch = []
                         for m in messages:
-                            logger.info(m)
-                            body = m.get("Body", "")
-                            try:
-                                payload = json.loads(body)
-                            except Exception:
-                                payload = {"status": "ERROR", "message": body}
-
-                            # Build your domain events / chart point from payload
-                            new_event = {
-                                "status": payload.get("status", "OK"),
-                                "message": payload.get("message", ""),
-                                "ts": payload.get("ts"),
-                                "meta": payload,
-                            }
-                            new_point = {
-                                "x": payload.get("x", self.time_step + 1),
-                                "y": payload.get("y", 1),
-                            }
-
+                            receipt_handle = m.get("ReceiptHandle")
+                            if not receipt_handle:
+                                continue
+                            new_event = self._create_event_from_sqs(
+                                cast(dict[str, Any], m).get("Body", "{}")
+                            )
+                            if new_event is None:
+                                continue
+                            new_events_batch.append(new_event)
+                            new_points_batch.append(self._generate_chart_point())
+                            delete_entries.append(
+                                {"Id": m["MessageId"], "ReceiptHandle": receipt_handle}
+                            )
+                        if new_events_batch:
                             async with self:
-                                self.time_step += 1
-                                self.events.insert(0, new_event)
+                                self.time_step += len(new_events_batch)
+                                self.events = new_events_batch + self.events
                                 if len(self.events) > self.MAX_EVENT_LOGS:
-                                    self.events.pop()
-
-                                self.chart_data.append(new_point)
+                                    self.events = self.events[: self.MAX_EVENT_LOGS]
+                                self.chart_data.extend(new_points_batch)
                                 if len(self.chart_data) > self.MAX_CHART_POINTS:
-                                    self.chart_data.pop(0)
-
-                                self.stats["total"] += 1
-                                st = new_event["status"]
-                                if st == "OK":
-                                    self.stats["ok"] += 1
-                                elif st == "WARN":
-                                    self.stats["warn"] += 1
-                                else:
-                                    self.stats["error"] += 1
-
-                            # push UI update for each message
+                                    self.chart_data = self.chart_data[
+                                        -self.MAX_CHART_POINTS :
+                                    ]
+                                self.stats["total"] += len(new_events_batch)
+                                for event in new_events_batch:
+                                    st = event["status"]
+                                    if st == "OK":
+                                        self.stats["ok"] += 1
+                                    elif st == "WARN":
+                                        self.stats["warn"] += 1
+                                    else:
+                                        self.stats["error"] += 1
                             yield
-
-                            delete_entries.append({
-                                "Id": m["MessageId"],
-                                "ReceiptHandle": m["ReceiptHandle"],
-                            })
-
-                        # Best-effort batch delete (avoid redelivery)
                         if delete_entries:
                             await sqs.delete_message_batch(
-                                QueueUrl=queue_url,
-                                Entries=delete_entries,
+                                QueueUrl=queue_url, Entries=delete_entries
                             )
-
                     except asyncio.CancelledError:
                         logger.info("stream_data cancelled; exiting")
                         break
                     except Exception as e:
                         logger.exception("SQS loop error: %s", e)
-                        # brief backoff to avoid hot loop on repeated errors
-                        await asyncio.sleep(1.0)
-
+                        await asyncio.sleep(5.0)
         finally:
             logger.info("SQS loop terminated")
+            async with self:
+                self.is_streaming = False

@@ -23,18 +23,21 @@ def live_chart() -> rx.Component:
             rx.recharts.cartesian_grid(
                 horizontal=True, vertical=False, class_name="stroke-slate-200"
             ),
-            rx.el.svg.defs(
-                rx.el.svg.linear_gradient(
-                    rx.el.svg.stop(offset="5%", stop_color="#8B5CF6", stop_opacity=0.4),
-                    rx.el.svg.stop(
-                        offset="95%", stop_color="#6366F1", stop_opacity=0.1
-                    ),
-                    id="chart_gradient",
-                    x1="0",
-                    y1="0",
-                    x2="0",
-                    y2="1",
-                )
+            rx.el.svg(
+                rx.el.defs(
+                    rx.el.linear_gradient(
+                        rx.el.stop(offset="5%", stop_color="#8B5CF6", stop_opacity=0.4),
+                        rx.el.stop(
+                            offset="95%", stop_color="#6366F1", stop_opacity=0.1
+                        ),
+                        id="chart_gradient",
+                        x1="0",
+                        y1="0",
+                        x2="0",
+                        y2="1",
+                    )
+                ),
+                style={"width": 0, "height": 0, "position": "absolute"},
             ),
             rx.recharts.x_axis(data_key="time", hide=True),
             rx.recharts.y_axis(domain=[0, "dataMax + 50"], hide=True),

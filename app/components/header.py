@@ -5,8 +5,26 @@ from app.states.dashboard_state import DashboardState
 def stat_card(icon: str, title: str, value: rx.Var[int], color: str) -> rx.Component:
     return rx.el.div(
         rx.el.div(
-            rx.icon(icon, size=24, class_name=f"text-{color}-500"),
-            class_name=f"p-3 bg-{color}-100 rounded-lg",
+            rx.icon(
+                icon,
+                size=24,
+                class_name=rx.match(
+                    color,
+                    ("indigo", "text-indigo-500"),
+                    ("green", "text-green-500"),
+                    ("yellow", "text-yellow-500"),
+                    ("red", "text-red-500"),
+                    "text-slate-500",
+                ),
+            ),
+            class_name=rx.match(
+                color,
+                ("indigo", "p-3 bg-indigo-100 rounded-lg"),
+                ("green", "p-3 bg-green-100 rounded-lg"),
+                ("yellow", "p-3 bg-yellow-100 rounded-lg"),
+                ("red", "p-3 bg-red-100 rounded-lg"),
+                "p-3 bg-slate-100 rounded-lg",
+            ),
         ),
         rx.el.div(
             rx.el.p(title, class_name="text-sm font-medium text-slate-500"),
@@ -32,19 +50,20 @@ def header() -> rx.Component:
                 "Real-time system monitoring and event tracking.",
                 class_name="text-slate-500",
             ),
+            class_name="flex flex-col gap-2",
         ),
         rx.el.div(
             stat_card(
                 "activity", "Total Events", DashboardState.stats["total"], "indigo"
             ),
-            stat_card("square_check", "Success", DashboardState.stats["ok"], "green"),
+            stat_card("square-check", "Success", DashboardState.stats["ok"], "green"),
             stat_card(
-                "flag_triangle_right",
+                "flag-triangle-right",
                 "Warnings",
                 DashboardState.stats["warn"],
                 "yellow",
             ),
-            stat_card("circle_x", "Errors", DashboardState.stats["error"], "red"),
+            stat_card("circle-x", "Errors", DashboardState.stats["error"], "red"),
             class_name="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6",
         ),
         class_name="flex flex-col gap-6",

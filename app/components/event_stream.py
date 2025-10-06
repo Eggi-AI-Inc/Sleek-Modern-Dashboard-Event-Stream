@@ -27,13 +27,23 @@ def status_badge(status: rx.Var[str]) -> rx.Component:
 def event_row(event: Event) -> rx.Component:
     return rx.el.div(
         rx.el.div(
-            status_badge(event["status"]),
-            rx.el.span(event["timestamp"], class_name="text-xs text-slate-500"),
-            class_name="flex items-center justify-between",
+            rx.el.img(src=event["avatar"], class_name="size-10 rounded-full"),
+            rx.el.div(
+                rx.el.div(
+                    status_badge(event["status"]),
+                    rx.el.span(event["timestamp"], class_name="text-xs text-slate-500"),
+                    class_name="flex items-center justify-between",
+                ),
+                rx.el.p(
+                    event["service"].split(":")[-1],
+                    class_name="font-medium text-slate-700 text-sm",
+                ),
+                rx.el.p(event["message"], class_name="text-sm text-slate-500"),
+                class_name="flex flex-col gap-1 w-full",
+            ),
+            class_name="flex items-start gap-4",
         ),
-        rx.el.p(event["service"], class_name="font-medium text-slate-700"),
-        rx.el.p(event["message"], class_name="text-sm text-slate-500"),
-        class_name="flex flex-col gap-1 p-4 border-b border-slate-100",
+        class_name="p-4 border-b border-slate-100",
     )
 
 
