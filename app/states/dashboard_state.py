@@ -29,17 +29,120 @@ class DashboardState(rx.State):
     is_streaming: bool = False
     stats: dict[str, int] = {"total": 0, "ok": 0, "warn": 0, "error": 0}
     MAX_EVENT_LOGS: int = 100
-    QUEUE_NAMES: list[str] = [
-        "eggi-mapping-service-profiles-to-analyse",
+    # Environment toggle: False -> prod, True -> dev
+    use_dev_queues: bool = False
+
+    # Base (prod) queue names; dev variant will replace "eggi-" with "eggi-dev-"
+    # Order: preparation -> mapping -> completion -> llm
+    QUEUE_BASE_NAMES: list[str] = [
         "eggi-profiles-to-analyse-preparation",
-        "eggi-profile-analysis-completed-supabase-sync",
+        "eggi-mapping-service-profiles-to-analyse",
+        "eggi-mapping-job-completion-handler",
+        "eggi-llm-inference-jobs",
     ]
-    DLQ_QUEUE_NAMES: list[str] = [
-        "eggi-mapping-service-profiles-dlq",
+    DLQ_BASE_NAMES: list[str] = [
         "eggi-profile-analysis-preparation-dlq",
-        "eggi-profile-analysis-completed-supabase-sync-dlq",
+        "eggi-mapping-service-profiles-dlq",
+        "eggi-mapping-job-completion-handler-dlq",
+        "eggi-llm-inference-jobs-dlq",
     ]
     queue_attributes: dict[str, QueueAttributes] = {}
+
+    @rx.var
+    def queue_names(self) -> list[str]:
+        if self.use_dev_queues:
+            return [name.replace("eggi-", "eggi-dev-") for name in self.QUEUE_BASE_NAMES]
+        return list(self.QUEUE_BASE_NAMES)
+
+    @rx.var
+    def dlq_queue_names(self) -> list[str]:
+        if self.use_dev_queues:
+            return [name.replace("eggi-", "eggi-dev-") for name in self.DLQ_BASE_NAMES]
+        return list(self.DLQ_BASE_NAMES)
+
+    @rx.event
+    def set_use_dev_queues(self, value: bool):
+        self.use_dev_queues = bool(value)
+        if self.is_streaming:
+            # Stop current background tasks and restart with the new queue set
+            self.is_streaming = False
+            return [DashboardState.start_streaming_on_load]
+
+    @rx.var
+    def queues_with_attrs(self) -> list[tuple[str, QueueAttributes]]:
+        result: list[tuple[str, QueueAttributes]] = []
+        existing = self.queue_attributes or {}
+        for name in self.queue_names:
+            attrs = existing.get(name)
+            if attrs is None:
+                counterpart = (
+                    name.replace("eggi-dev-", "eggi-")
+                    if name.startswith("eggi-dev-")
+                    else name.replace("eggi-", "eggi-dev-")
+                )
+                attrs = existing.get(counterpart) or {
+                    "ApproximateNumberOfMessages": "0",
+                    "ApproximateNumberOfMessagesNotVisible": "0",
+                    "ApproximateNumberOfMessagesDelayed": "0",
+                }
+            result.append((name, attrs))
+        return result
+
+    @rx.var
+    def dlq_queues_with_attrs(self) -> list[tuple[str, QueueAttributes]]:
+        result: list[tuple[str, QueueAttributes]] = []
+        existing = self.queue_attributes or {}
+        for name in self.dlq_queue_names:
+            attrs = existing.get(name)
+            if attrs is None:
+                counterpart = (
+                    name.replace("eggi-dev-", "eggi-")
+                    if name.startswith("eggi-dev-")
+                    else name.replace("eggi-", "eggi-dev-")
+                )
+                attrs = existing.get(counterpart) or {
+                    "ApproximateNumberOfMessages": "0",
+                    "ApproximateNumberOfMessagesNotVisible": "0",
+                    "ApproximateNumberOfMessagesDelayed": "0",
+                }
+            result.append((name, attrs))
+        return result
+
+    @rx.var
+    def queue_rows(self) -> list[dict[str, str]]:
+        rows: list[dict[str, str]] = []
+        for name, attrs in self.queues_with_attrs:
+            rows.append(
+                {
+                    "name": name,
+                    "ApproximateNumberOfMessages": attrs["ApproximateNumberOfMessages"],
+                    "ApproximateNumberOfMessagesNotVisible": attrs[
+                        "ApproximateNumberOfMessagesNotVisible"
+                    ],
+                    "ApproximateNumberOfMessagesDelayed": attrs[
+                        "ApproximateNumberOfMessagesDelayed"
+                    ],
+                }
+            )
+        return rows
+
+    @rx.var
+    def dlq_queue_rows(self) -> list[dict[str, str]]:
+        rows: list[dict[str, str]] = []
+        for name, attrs in self.dlq_queues_with_attrs:
+            rows.append(
+                {
+                    "name": name,
+                    "ApproximateNumberOfMessages": attrs["ApproximateNumberOfMessages"],
+                    "ApproximateNumberOfMessagesNotVisible": attrs[
+                        "ApproximateNumberOfMessagesNotVisible"
+                    ],
+                    "ApproximateNumberOfMessagesDelayed": attrs[
+                        "ApproximateNumberOfMessagesDelayed"
+                    ],
+                }
+            )
+        return rows
 
     def _create_event_from_sqs(self, message_body: str) -> Optional[Event]:
         try:
@@ -80,14 +183,34 @@ class DashboardState(rx.State):
         self.is_streaming = True
         self.events = []
         self.stats = {"total": 0, "ok": 0, "warn": 0, "error": 0}
-        self.queue_attributes = {
-            name: {
-                "ApproximateNumberOfMessages": "0",
-                "ApproximateNumberOfMessagesNotVisible": "0",
-                "ApproximateNumberOfMessagesDelayed": "0",
-            }
-            for name in self.QUEUE_NAMES + self.DLQ_QUEUE_NAMES
-        }
+        # Preserve existing attributes and seed missing queues from their base/dev counterpart
+        # to avoid UI resets when toggling environments.
+        existing = self.queue_attributes or {}
+        target_names = self.queue_names + self.dlq_queue_names
+        new_attrs: dict[str, QueueAttributes] = dict(existing)
+        for name in target_names:
+            if name in new_attrs:
+                continue
+            # Try to seed from the opposite env name if present
+            if name.startswith("eggi-dev-"):
+                counterpart = name.replace("eggi-dev-", "eggi-")
+            else:
+                counterpart = name.replace("eggi-", "eggi-dev-")
+            seed = existing.get(counterpart)
+            if seed is None:
+                seed = {
+                    "ApproximateNumberOfMessages": existing.get(name, {}).get(
+                        "ApproximateNumberOfMessages", "0"
+                    ),
+                    "ApproximateNumberOfMessagesNotVisible": existing.get(name, {}).get(
+                        "ApproximateNumberOfMessagesNotVisible", "0"
+                    ),
+                    "ApproximateNumberOfMessagesDelayed": existing.get(name, {}).get(
+                        "ApproximateNumberOfMessagesDelayed", "0"
+                    ),
+                }
+            new_attrs[name] = seed  # type: ignore[assignment]
+        self.queue_attributes = new_attrs
         return [DashboardState.stream_data, DashboardState.update_queue_attributes]
 
     @rx.event(background=True)
@@ -97,14 +220,16 @@ class DashboardState(rx.State):
             aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
             region_name="eu-west-3",
         )
-        all_queues = self.QUEUE_NAMES + self.DLQ_QUEUE_NAMES
+        all_queues = self.queue_names + self.dlq_queue_names
         async with session.client("sqs") as sqs:
             while True:
                 async with self:
                     if not self.is_streaming:
                         break
                 try:
-                    updated_attributes: dict[str, QueueAttributes] = {}
+                    # Start from the previous values to avoid flashing placeholders.
+                    prev_attributes: dict[str, QueueAttributes] = self.queue_attributes or {}
+                    updated_attributes: dict[str, QueueAttributes] = dict(prev_attributes)
                     for queue_name in all_queues:
                         try:
                             q_url_resp = await sqs.get_queue_url(QueueName=queue_name)
@@ -115,24 +240,38 @@ class DashboardState(rx.State):
                             attrs = attrs_resp.get("Attributes", {})
                             updated_attributes[queue_name] = {
                                 "ApproximateNumberOfMessages": attrs.get(
-                                    "ApproximateNumberOfMessages", "N/A"
+                                    "ApproximateNumberOfMessages",
+                                    prev_attributes.get(queue_name, {}).get(
+                                        "ApproximateNumberOfMessages", "0"
+                                    ),
                                 ),
                                 "ApproximateNumberOfMessagesNotVisible": attrs.get(
-                                    "ApproximateNumberOfMessagesNotVisible", "N/A"
+                                    "ApproximateNumberOfMessagesNotVisible",
+                                    prev_attributes.get(queue_name, {}).get(
+                                        "ApproximateNumberOfMessagesNotVisible", "0"
+                                    ),
                                 ),
                                 "ApproximateNumberOfMessagesDelayed": attrs.get(
-                                    "ApproximateNumberOfMessagesDelayed", "N/A"
+                                    "ApproximateNumberOfMessagesDelayed",
+                                    prev_attributes.get(queue_name, {}).get(
+                                        "ApproximateNumberOfMessagesDelayed", "0"
+                                    ),
                                 ),
                             }
                         except Exception as e:
+                            # Preserve previous values on error to avoid UI flicker.
                             logger.exception(
                                 f"Could not fetch attributes for {queue_name}: {e}"
                             )
-                            updated_attributes[queue_name] = {
-                                "ApproximateNumberOfMessages": "ERR",
-                                "ApproximateNumberOfMessagesNotVisible": "ERR",
-                                "ApproximateNumberOfMessagesDelayed": "ERR",
-                            }
+                            if queue_name not in updated_attributes:
+                                updated_attributes[queue_name] = prev_attributes.get(
+                                    queue_name,
+                                    {
+                                        "ApproximateNumberOfMessages": "0",
+                                        "ApproximateNumberOfMessagesNotVisible": "0",
+                                        "ApproximateNumberOfMessagesDelayed": "0",
+                                    },
+                                )
                     async with self:
                         self.queue_attributes = updated_attributes
                 except Exception as e:
@@ -141,7 +280,11 @@ class DashboardState(rx.State):
 
     @rx.event(background=True)
     async def stream_data(self):
-        queue_url = "https://sqs.eu-west-3.amazonaws.com/183295452065/eggi-dev-reflex-monitoring-events"
+        base_queue = "eggi-llm-inference-jobs"
+        selected_queue = (
+            base_queue.replace("eggi-", "eggi-dev-") if self.use_dev_queues else base_queue
+        )
+        queue_url = f"https://sqs.eu-west-3.amazonaws.com/183295452065/{selected_queue}"
         session = aioboto3.Session(
             aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
             aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),

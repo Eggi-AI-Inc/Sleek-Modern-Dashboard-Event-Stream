@@ -1,0 +1,16 @@
+#file: noinspection SpellCheckingInspection
+
+version: 2
+project: dashboard
+
+import:
+  - env/env.sh
+
+env:
+  VERSION: "v1.0.0"
+
+commands:
+  run:
+    help: "Run the application"
+    exec: |
+      uv run reflex run

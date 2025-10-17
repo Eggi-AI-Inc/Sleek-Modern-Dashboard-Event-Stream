@@ -1,9 +1,21 @@
-assets/external/
-*.py[cod]
-*.db
-.web
-.states
-.web/
-.states/
+# Python
 __pycache__/
-/app/__pycache__/
+*.py[cod]
+
+# Virtual env & local env files
+.venv/
+venv/
+.web/
+web/
+.states/
+states/
+.env
+.env.*
+env/env.sh
+
+# Output folder
+output/
+env/
+
+# IDE files
+.idea/

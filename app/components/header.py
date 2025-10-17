@@ -45,6 +45,29 @@ def header() -> rx.Component:
                 rx.el.h1("Eggi.io", class_name="text-2xl font-bold text-slate-800"),
                 class_name="flex items-center gap-3",
             ),
+            rx.el.label(
+                rx.el.input(
+                    type="checkbox",
+                    checked=DashboardState.use_dev_queues,
+                    on_change=DashboardState.set_use_dev_queues,
+                    class_name="sr-only peer",
+                ),
+                rx.el.div(
+                    class_name="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600 relative",
+                ),
+                rx.el.span(
+                    rx.cond(
+                        DashboardState.use_dev_queues,
+                        "Dev queues",
+                        "Prod queues",
+                    ),
+                    class_name="ml-3 text-sm font-medium text-slate-600",
+                ),
+                class_name="inline-flex items-center cursor-pointer select-none",
+            ),
+            class_name="flex items-center justify-between",
+        ),
+        rx.el.div(
             rx.el.h1("Live Dashboard", class_name="text-3xl font-bold text-slate-800"),
             rx.el.p(
                 "Real-time system monitoring and event tracking.",
